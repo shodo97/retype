@@ -1,0 +1,549 @@
+/* Monkeytype's default "serika dark" palette. */
+:root {
+  --bg: #323437;
+  --main: #e2b714;
+  --caret: #e2b714;
+  --sub: #646669;
+  --sub-alt: #2c2e31;
+  --text: #d1d0c5;
+  --error: #ca4754;
+  --error-extra: #7e2a33;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Roboto Mono', ui-monospace, Menlo, monospace;
+  font-size: 16px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--main);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.app {
+  min-height: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 1.75rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.logo-mark {
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 1.7rem;
+  border-radius: 0.4rem;
+  background: var(--main);
+  color: var(--bg);
+  font-size: 1rem;
+}
+
+.text-button {
+  color: var(--sub);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  transition: color 0.125s, background 0.125s;
+}
+
+.text-button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.text-button.primary {
+  background: var(--sub-alt);
+  color: var(--text);
+}
+
+.text-button.primary:hover {
+  background: var(--text);
+  color: var(--bg);
+}
+
+header nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.sign-in {
+  width: 100%;
+  max-width: 320px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.sign-in input {
+  font: inherit;
+  color: var(--text);
+  background: var(--sub-alt);
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  caret-color: var(--caret);
+}
+
+.sign-in input::placeholder {
+  color: var(--sub);
+}
+
+.sign-in input:focus-visible {
+  outline: 2px solid var(--main);
+}
+
+/* ---------- library ---------- */
+
+.library {
+  flex: 1;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 2rem 0;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 3rem 1rem;
+  border: 2px dashed var(--sub);
+  border-radius: 0.75rem;
+  color: var(--sub);
+  transition: color 0.125s, border-color 0.125s;
+}
+
+.dropzone strong {
+  font-weight: 500;
+  font-size: 1.25rem;
+  color: var(--text);
+}
+
+.dropzone:hover:not(:disabled),
+.dropzone.dragging {
+  border-color: var(--main);
+  color: var(--text);
+}
+
+.dropzone:disabled {
+  opacity: 1;
+  color: var(--main);
+}
+
+.error-message {
+  margin: 0;
+  color: var(--error);
+}
+
+.books {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.books li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.book {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--sub-alt);
+  text-align: left;
+  transition: color 0.125s;
+}
+
+.book:hover:not(:disabled) {
+  color: var(--main);
+}
+
+.book-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-meta {
+  flex-shrink: 0;
+  color: var(--sub);
+}
+
+/* ---------- reader ---------- */
+
+.reader {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.config {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 1.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--sub-alt);
+  font-size: 0.8rem;
+  color: var(--sub);
+}
+
+.config button {
+  padding: 0.5rem;
+  color: var(--sub);
+  transition: color 0.125s;
+}
+
+.config button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.config button.active {
+  color: var(--main);
+}
+
+.config-label {
+  padding: 0.5rem;
+}
+
+.divider {
+  width: 0.25rem;
+  height: 1.25rem;
+  margin: 0 0.5rem;
+  border-radius: 0.125rem;
+  background: var(--bg);
+}
+
+.stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 2rem 0;
+}
+
+.typing {
+  font-size: 1.5rem;
+}
+
+.live {
+  display: flex;
+  gap: 1.5rem;
+  margin: 0 0.3em 0.25em;
+  color: var(--main);
+  transition: opacity 0.125s;
+}
+
+.live.idle {
+  opacity: 0;
+}
+
+/* Shows the whole passage when it fits, otherwise scrolls with the caret. Each line is 2em
+   (1.5em of word plus 0.25em margin either side). */
+.viewport {
+  max-height: max(8em, min(20em, calc(100vh - 23rem)));
+  overflow: hidden;
+}
+
+/* Fade the edge where text continues out of view. */
+.viewport.more-above {
+  mask-image: linear-gradient(to bottom, transparent, black 1.25em);
+}
+
+.viewport.more-below {
+  mask-image: linear-gradient(to top, transparent, black 2.5em);
+}
+
+.viewport.more-above.more-below {
+  mask-image: linear-gradient(to bottom, transparent, black 1.25em, black calc(100% - 2.5em), transparent);
+}
+
+.scroller {
+  position: relative;
+  transition: transform 0.125s ease-out;
+}
+
+.words {
+  user-select: none;
+}
+
+.paragraph {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+}
+
+.paragraph + .paragraph {
+  margin-top: 1em;
+}
+
+.enter {
+  margin: 0.25em 0.3em;
+  line-height: 1.5em;
+  color: var(--sub);
+  opacity: 0.6;
+}
+
+.enter.passed {
+  opacity: 0.25;
+}
+
+.word {
+  margin: 0.25em 0.3em;
+  line-height: 1.5em;
+  color: var(--sub);
+  border-bottom: 2px solid transparent;
+  white-space: pre;
+}
+
+.word.error {
+  border-bottom-color: var(--error);
+}
+
+.word .correct {
+  color: var(--text);
+}
+
+.word .incorrect {
+  color: var(--error);
+}
+
+.word .extra {
+  color: var(--error-extra);
+}
+
+.caret {
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 0.1em;
+  border-radius: 0.05em;
+  background: var(--caret);
+  transition: transform 0.1s ease-out;
+}
+
+.caret.blink {
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.book-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--sub);
+}
+
+.book-done strong {
+  font-size: 2rem;
+  font-weight: 500;
+  color: var(--main);
+}
+
+/* ---------- results ---------- */
+
+.results {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2rem 4rem;
+  align-items: center;
+}
+
+.headline {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 3rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat .label {
+  color: var(--sub);
+}
+
+.stat .value {
+  color: var(--main);
+  font-size: 2rem;
+  line-height: 1.2;
+}
+
+.stat.big .label {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.stat.big .value {
+  font-size: 4rem;
+  line-height: 1;
+}
+
+.actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+}
+
+/* ---------- footer ---------- */
+
+footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--sub);
+}
+
+.book-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.book-line span:last-child {
+  flex-shrink: 0;
+}
+
+.book-stats {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.progress {
+  height: 1rem;
+  padding: 0.375rem 0;
+  cursor: pointer;
+  background: var(--sub-alt);
+  background-clip: content-box;
+  border-radius: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 0.125rem;
+  background: var(--main);
+}
+
+.hints {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+kbd {
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.2rem;
+  background: var(--sub);
+  color: var(--bg);
+  font: inherit;
+}
+
+kbd:not(:first-child) {
+  margin-left: 1rem;
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: 1rem;
+  }
+
+  .typing {
+    font-size: 1.15rem;
+  }
+
+  .results {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret,
+  .scroller {
+    transition: none;
+  }
+
+  .caret.blink {
+    animation: none;
+  }
+}
