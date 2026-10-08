@@ -1,41 +1,56 @@
 import type { Session } from '@supabase/supabase-js'
-import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from 'react'
+import { Book3D, Opening, preloadOpening, reducedMotion, thickness } from './Book3D'
+import { coverFromFile, forgetCover, loadCover, saveCover, useCover } from './covers'
 import { extract } from './extract'
+import { Landing } from './Landing'
 import {
-  PASSAGE_SIZES,
   createBook,
   deleteBook,
   flushUpdates,
   getText,
   listBooks,
   loadCurrent,
-  loadPassageSize,
+  loadLast,
   migrateLocalBooks,
   onSyncStatus,
   queueUpdate,
   saveCurrent,
-  savePassageSize,
   type BookMeta,
   type BookStats,
 } from './store'
 import { supabase } from './supabase'
-import { normalize, parseBook, passageAt, passageBounds, type Book } from './text'
+import { normalize, paragraphAt, parseBook, type Book } from './text'
+import { useTheme } from './theme'
 import { Typing, type Result } from './Typing'
-
-// Buttons give focus straight back so Space and Enter keep going to the typing test.
-const unfocus = (e: MouseEvent<HTMLElement>) => e.currentTarget.blur()
+import { ThemeToggle, Wordmark } from './Wordmark'
 
 const percent = (book: BookMeta) => (book.wordCount ? (Math.min(book.pos, book.wordCount) / book.wordCount) * 100 : 0)
 
-function formatTime(seconds: number) {
+function progressLabel(book: BookMeta) {
+  if (book.pos <= 0) return 'Not started'
+  if (book.pos >= book.wordCount) return 'Finished'
+  return `${percent(book).toFixed(1)}%`
+}
+
+function formatSpan(seconds: number) {
   const s = Math.round(seconds)
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+  if (s < 60) return `${s} ${s === 1 ? 'second' : 'seconds'}`
+  return `${Math.floor(s / 60)} min ${s % 60} s`
 }
 
 function formatDuration(seconds: number) {
   if (seconds < 60) return `${Math.round(seconds)}s`
   const minutes = Math.round(seconds / 60)
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+// Lifetime figures for a book, or nothing before its first session.
+function statsLine(stats: BookStats | undefined) {
+  if (!stats || stats.seconds <= 0) return null
+  const wpm = Math.round(stats.chars / 5 / (stats.seconds / 60))
+  const acc = Math.floor(((stats.keys - stats.errors) / Math.max(stats.keys, 1)) * 100)
+  return `avg ${wpm} wpm · ${acc}% accuracy · ${formatDuration(stats.seconds)} typed`
 }
 
 function addResult(stats: BookStats | undefined, result: Result): BookStats {
@@ -60,65 +75,21 @@ export default function App() {
   }, [])
 
   if (session === undefined) return <div className="app" />
-  if (!session) return <SignIn />
+  if (!session) return <Landing />
   return <Main key={session.user.id} />
 }
 
-function SignIn() {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) setError(error.message)
-    setBusy(false)
-  }
-
-  return (
-    <div className="app">
-      <header>
-        <span className="logo">
-          <span className="logo-mark">rt</span>retype
-        </span>
-      </header>
-      <main className="library">
-        <form className="sign-in" onSubmit={submit}>
-          <input
-            type="email"
-            placeholder="email"
-            autoComplete="email"
-            required
-            autoFocus
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <button className="text-button primary" disabled={busy}>
-            {busy ? 'signing in…' : 'sign in'}
-          </button>
-          {error && <p className="error-message">{error}</p>}
-        </form>
-      </main>
-    </div>
-  )
-}
-
 function Main() {
+  const [theme, toggleTheme] = useTheme()
   const [books, setBooks] = useState<BookMeta[]>([])
   const [open, setOpen] = useState<{ id: string; content: Book } | null>(null)
-  const [busy, setBusy] = useState<string | null>('loading library…')
+  // False until the library has loaded and any book left open last time is back on screen.
+  const [ready, setReady] = useState(false)
+  // Progress of a file being added.
+  const [busy, setBusy] = useState<string | null>(null)
+  // The book being fetched. With `from` it is also being lifted off the shelf and opened.
+  const [opening, setOpening] = useState<{ id: string; from?: DOMRect } | null>(null)
+  const [fetched, setFetched] = useState<Book | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
 
@@ -127,16 +98,27 @@ function Main() {
     return () => onSyncStatus(() => {})
   }, [])
 
-  async function openBook(id: string) {
+  function show(id: string, content: Book) {
+    setOpen({ id, content })
+    saveCurrent(id)
+    setOpening(null)
+    setFetched(null)
+  }
+
+  // `from` is where the book sits on the shelf; without it the page simply appears.
+  async function openBook(id: string, from?: DOMRect) {
+    const animate = !!from && !reducedMotion()
     setError(null)
-    setBusy('opening…')
+    setFetched(null)
+    setOpening({ id, from: animate ? from : undefined })
     try {
-      setOpen({ id, content: parseBook(await getText(id)) })
-      saveCurrent(id)
+      const content = parseBook(await getText(id))
+      // An animated opening shows the page itself, once the pages have turned.
+      if (animate) setFetched(content)
+      else show(id, content)
     } catch (e) {
       setError(errorMessage(e))
-    } finally {
-      setBusy(null)
+      setOpening(null)
     }
   }
 
@@ -154,7 +136,7 @@ function Main() {
       } catch (e) {
         if (!cancelled) setError(errorMessage(e))
       } finally {
-        if (!cancelled) setBusy(null)
+        if (!cancelled) setReady(true)
       }
     })()
     return () => {
@@ -165,7 +147,7 @@ function Main() {
 
   async function addBook(file: File) {
     setError(null)
-    setBusy('reading file…')
+    setBusy('Reading the file')
     try {
       const { title, text } = await extract(file, setBusy)
       const canonical = normalize(text)
@@ -180,8 +162,12 @@ function Main() {
         pos: 0,
         addedAt: Date.now(),
       }
-      setBusy('saving…')
+      setBusy('Saving to your library')
       await createBook(book, canonical)
+      // The cover is a nicety: the book is added whether or not one can be found in the file.
+      void coverFromFile(file)
+        .then((cover) => cover && saveCover(book.id, cover))
+        .catch(() => {})
       setBooks((prev) => [book, ...prev])
       setOpen({ id: book.id, content })
       saveCurrent(book.id)
@@ -196,6 +182,7 @@ function Main() {
     setError(null)
     try {
       await deleteBook(id)
+      forgetCover(id)
       setBooks((prev) => prev.filter((b) => b.id !== id))
     } catch (e) {
       setError(errorMessage(e))
@@ -221,23 +208,24 @@ function Main() {
 
   return (
     <div className="app">
-      <header>
-        <button className="logo" onClick={goHome}>
-          <span className="logo-mark">rt</span>retype
+      <header className="masthead chrome">
+        <button className="home" onClick={goHome} aria-label="retype, back to the library">
+          <Wordmark />
         </button>
         <nav>
           {syncError && (
-            <span className="error-message" title={syncError}>
-              progress not saved, retrying
+            <span className="sync-error" role="status" title={syncError}>
+              Progress not saved. Retrying.
             </span>
           )}
           {book && (
-            <button className="text-button" onClick={goHome}>
-              library
+            <button className="link" onClick={goHome}>
+              Library
             </button>
           )}
-          <button className="text-button" onClick={signOut}>
-            sign out
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <button className="link" onClick={signOut}>
+            Sign out
           </button>
         </nav>
       </header>
@@ -248,9 +236,36 @@ function Main() {
           content={open.content}
           onPos={(pos) => patchBook(book.id, { pos })}
           onResult={(result) => patchBook(book.id, { stats: addResult(book.stats, result) })}
+          onHome={goHome}
+        />
+      ) : ready ? (
+        <Library
+          books={books}
+          busy={busy}
+          opening={opening?.id ?? null}
+          error={error}
+          onFile={addBook}
+          onOpen={openBook}
+          onRemove={removeBook}
         />
       ) : (
-        <Library books={books} busy={busy} error={error} onFile={addBook} onOpen={openBook} onRemove={removeBook} />
+        <main className="library" aria-busy="true" aria-label="Loading your library">
+          <div className="skeleton">
+            <span />
+            <span />
+            <span />
+          </div>
+        </main>
+      )}
+      {opening?.from && (
+        <Opening
+          title={books.find((b) => b.id === opening.id)?.title ?? ''}
+          depth={thickness(books.find((b) => b.id === opening.id)?.wordCount ?? 0)}
+          cover={loadCover(opening.id) || undefined}
+          from={opening.from}
+          ready={!!fetched}
+          onDone={() => fetched && show(opening.id, fetched)}
+        />
       )}
     </div>
   )
@@ -259,42 +274,134 @@ function Main() {
 function Library(props: {
   books: BookMeta[]
   busy: string | null
+  opening: string | null
   error: string | null
   onFile: (file: File) => void
-  onOpen: (id: string) => void
+  onOpen: (id: string, from?: DOMRect) => void
   onRemove: (id: string) => void
 }) {
-  const { books, busy, error, onFile, onOpen, onRemove } = props
+  const { books, busy, opening, error, onFile, onOpen, onRemove } = props
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
+  // Book whose removal is waiting to be confirmed.
+  const [removing, setRemoving] = useState<string | null>(null)
+  const locked = !!busy || !!opening
 
-  function onDrop(e: DragEvent) {
-    e.preventDefault()
-    setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file && !busy) onFile(file)
+  const coverInputRef = useRef<HTMLInputElement>(null)
+  const coverFor = useRef<string | null>(null)
+  const [coverError, setCoverError] = useState<string | null>(null)
+
+  useEffect(preloadOpening, [])
+
+  const latest = useRef({ locked, onFile })
+  latest.current = { locked, onFile }
+
+  // A file can be dropped anywhere on the page.
+  useEffect(() => {
+    let depth = 0
+    const hasFile = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files')
+    const onEnter = (e: DragEvent) => {
+      if (!hasFile(e)) return
+      depth++
+      setDragging(true)
+    }
+    const onLeave = (e: DragEvent) => {
+      if (!hasFile(e)) return
+      if (--depth <= 0) setDragging(false)
+    }
+    const onOver = (e: DragEvent) => {
+      if (hasFile(e)) e.preventDefault()
+    }
+    const onDrop = (e: DragEvent) => {
+      if (!hasFile(e)) return
+      e.preventDefault()
+      depth = 0
+      setDragging(false)
+      const file = e.dataTransfer?.files[0]
+      if (file && !latest.current.locked) latest.current.onFile(file)
+    }
+    window.addEventListener('dragenter', onEnter)
+    window.addEventListener('dragleave', onLeave)
+    window.addEventListener('dragover', onOver)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onEnter)
+      window.removeEventListener('dragleave', onLeave)
+      window.removeEventListener('dragover', onOver)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [])
+
+  const last = useMemo(loadLast, [])
+  const current = books.find((b) => b.id === last && b.pos < b.wordCount)
+  const shelf = books.filter((b) => b !== current)
+
+  // Opens a book from where it sits on the shelf.
+  const pick = (id: string) => onOpen(id, document.getElementById(`book-${id}`)?.getBoundingClientRect())
+
+  const volume = (b: BookMeta, large = false) => (
+    <Volume book={b} large={large} hidden={opening === b.id} disabled={locked} onPick={() => pick(b.id)} />
+  )
+
+  // Remove, and a way to give the book a cover from a picture or from its own file.
+  const upkeep = (b: BookMeta) => (
+    <p className="upkeep">
+      <button
+        className="link"
+        aria-label={`Change the cover of ${b.title}`}
+        onClick={() => {
+          coverFor.current = b.id
+          coverInputRef.current?.click()
+        }}
+      >
+        Change cover
+      </button>
+      <button className="link" aria-label={`Remove ${b.title}`} onClick={() => setRemoving(b.id)}>
+        Remove
+      </button>
+    </p>
+  )
+
+  async function changeCover(file: File) {
+    const id = coverFor.current
+    if (!id) return
+    setCoverError(null)
+    try {
+      const cover = await coverFromFile(file)
+      if (cover) saveCover(id, cover)
+      else setCoverError('No cover found in that file. Choose a picture, or the PDF or EPUB of the book.')
+    } catch {
+      setCoverError('That file could not be read as a cover. Choose a picture, or the PDF or EPUB of the book.')
+    }
   }
+
+  const confirmRemove = (b: BookMeta) => (
+    <p className="confirm">
+      <span>Remove this book and its progress?</span>
+      <button
+        className="link danger"
+        autoFocus
+        onClick={() => {
+          setRemoving(null)
+          onRemove(b.id)
+        }}
+      >
+        Remove
+      </button>
+      <button className="link" onClick={() => setRemoving(null)}>
+        Keep
+      </button>
+    </p>
+  )
+
+  const addButton = (
+    <button className="button" disabled={locked} onClick={() => inputRef.current?.click()}>
+      Add a book
+    </button>
+  )
 
   return (
     <main className="library">
-      <button
-        className={`dropzone${dragging ? ' dragging' : ''}`}
-        disabled={!!busy}
-        onClick={() => inputRef.current?.click()}
-        onDragOver={(e) => {
-          e.preventDefault()
-          setDragging(true)
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-      >
-        {busy ?? (
-          <>
-            <strong>drop a book here</strong>
-            <span>or click to choose a pdf or epub</span>
-          </>
-        )}
-      </button>
       <input
         ref={inputRef}
         type="file"
@@ -306,31 +413,125 @@ function Library(props: {
           e.target.value = ''
         }}
       />
-      {error && <p className="error-message">{error}</p>}
-      {books.length > 0 && (
-        <ul className="books">
-          {books.map((b) => (
-            <li key={b.id}>
-              <button className="book" onClick={() => onOpen(b.id)} disabled={!!busy}>
-                <span className="book-title">{b.title}</span>
-                <span className="book-meta">
-                  {b.wordCount.toLocaleString()} words · {percent(b).toFixed(1)}%
-                </span>
-              </button>
-              <button
-                className="text-button"
-                aria-label={`Remove ${b.title}`}
-                onClick={() => {
-                  if (confirm(`Remove "${b.title}" and its progress?`)) onRemove(b.id)
-                }}
-              >
-                remove
-              </button>
-            </li>
-          ))}
-        </ul>
+
+      {busy && (
+        <p className="status" role="status">
+          {busy}
+        </p>
+      )}
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/*,.pdf,.epub,application/pdf,application/epub+zip"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void changeCover(file)
+          e.target.value = ''
+        }}
+      />
+      {(error ?? coverError) && (
+        <p className="alert" role="alert">
+          {error ?? coverError}
+        </p>
+      )}
+
+      {books.length === 0 ? (
+        <section className="empty">
+          <p className="eyebrow">Your library</p>
+          <h1>Nothing on the shelf yet.</h1>
+          <p className="lede">
+            Add a book and retype will set it out for typing, from the first word to the last. PDF, EPUB and plain
+            text all work. A scanned PDF needs OCR first.
+          </p>
+          {addButton}
+          <p className="fine">Or drop a file anywhere on this page.</p>
+        </section>
+      ) : (
+        <>
+          {current && (
+            <section className="current" aria-labelledby="current-title">
+              {volume(current, true)}
+              <div className="current-text">
+                <p className="eyebrow">{current.pos > 0 ? 'Continue' : 'Up next'}</p>
+                <h1 id="current-title">{current.title}</h1>
+                <div className="rule" aria-hidden="true">
+                  <div style={{ width: `${percent(current)}%` }} />
+                </div>
+                <p className="current-meta">
+                  <span>
+                    {Math.min(current.pos, current.wordCount).toLocaleString()} of{' '}
+                    {current.wordCount.toLocaleString()} words
+                  </span>
+                  {statsLine(current.stats) && <span>{statsLine(current.stats)}</span>}
+                </p>
+                {removing === current.id ? (
+                  confirmRemove(current)
+                ) : (
+                  <div className="actions">
+                    <button className="button primary" disabled={locked} onClick={() => pick(current.id)}>
+                      {current.pos > 0 ? 'Continue typing' : 'Start typing'}
+                    </button>
+                    {upkeep(current)}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          <section className="shelf" aria-labelledby="shelf-title">
+            <header>
+              <h2 className="eyebrow" id="shelf-title">
+                {current ? 'Also on the shelf' : 'Your library'}
+              </h2>
+              {addButton}
+            </header>
+            {shelf.length > 0 && (
+              <ol className="volumes">
+                {shelf.map((b) => (
+                  <li key={b.id} className="volume">
+                    {volume(b)}
+                    <p className="volume-title">{b.title}</p>
+                    <p className="volume-meta">
+                      {progressLabel(b)} · {b.wordCount.toLocaleString()} words
+                    </p>
+                    {statsLine(b.stats) && <p className="volume-meta">{statsLine(b.stats)}</p>}
+                    {removing === b.id ? (
+                      confirmRemove(b)
+                    ) : (
+                      upkeep(b)
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+            <p className="fine">Drop a PDF, EPUB or text file anywhere on this page to add it.</p>
+          </section>
+        </>
+      )}
+
+      {dragging && (
+        <div className="drop-veil" aria-hidden="true">
+          <p>{locked ? 'One book at a time. This one can wait.' : 'Drop it to add it to your library.'}</p>
+        </div>
       )}
     </main>
+  )
+}
+
+function Volume(props: { book: BookMeta; large: boolean; hidden: boolean; disabled: boolean; onPick: () => void }) {
+  const { book, large, hidden, disabled, onPick } = props
+  const cover = useCover(book.id, book.title)
+  return (
+    <button className="volume-open" disabled={disabled} onClick={onPick} aria-label={`Open ${book.title}`}>
+      <span
+        className={`book-slot${large ? ' large' : ''}`}
+        id={`book-${book.id}`}
+        style={hidden ? { visibility: 'hidden' } : undefined}
+      >
+        <Book3D title={book.title} depth={thickness(book.wordCount)} cover={cover} />
+      </span>
+    </button>
   )
 }
 
@@ -339,28 +540,27 @@ type ReaderProps = {
   content: Book
   onPos: (pos: number) => void
   onResult: (result: Result) => void
+  onHome: () => void
 }
 
-function Reader({ book, content, onPos, onResult }: ReaderProps) {
+function Reader({ book, content, onPos, onResult, onHome }: ReaderProps) {
   const { words, starts } = content
-  const [size, setSize] = useState(loadPassageSize)
+  // Where the current session began. Typing runs on from here until it is ended.
+  const [from, setFrom] = useState(book.pos)
   const [attempt, setAttempt] = useState(0)
-  // Result of the passage just finished, with where it started so it can be retyped.
-  const [finished, setFinished] = useState<{ result: Result; start: number } | null>(null)
+  // Result of the session just ended, with its range so it can be retyped or continued.
+  const [finished, setFinished] = useState<{ result: Result; start: number; end: number } | null>(null)
+  // Where along the progress rule the pointer is, as a fraction.
+  const [hover, setHover] = useState<number | null>(null)
 
-  const bounds = useMemo(() => passageBounds(content, size), [content, size])
-  const index = passageAt(bounds, book.pos)
-  const start = index < 0 ? words.length : bounds[index]
-  const end = index < 0 ? words.length : bounds[index + 1]
-  const passage = useMemo(() => words.slice(start, end), [words, start, end])
-  // Paragraph starts inside the passage, relative to it.
-  const passageStarts = useMemo(
-    () => [0, ...starts.filter((i) => i > start && i < end).map((i) => i - start)],
-    [starts, start, end],
-  )
+  const done = from >= words.length
+  const rest = useMemo(() => words.slice(from), [words, from])
+  // Paragraph starts from here on, relative to the session.
+  const restStarts = useMemo(() => [0, ...starts.filter((i) => i > from).map((i) => i - from)], [starts, from])
 
   function goTo(pos: number) {
     setFinished(null)
+    setFrom(pos)
     setAttempt((n) => n + 1)
     onPos(pos)
   }
@@ -368,10 +568,12 @@ function Reader({ book, content, onPos, onResult }: ReaderProps) {
   useEffect(() => {
     if (!finished) return
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.target instanceof HTMLElement && e.target.closest('button')) return
       if (e.key === 'Enter') {
         e.preventDefault()
-        setFinished(null)
-      } else if (e.key === 'Tab') {
+        goTo(finished.end)
+      } else if (e.key === 'r' || e.key === 'R') {
         e.preventDefault()
         goTo(finished.start)
       }
@@ -381,162 +583,199 @@ function Reader({ book, content, onPos, onResult }: ReaderProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished])
 
-  function seek(e: MouseEvent<HTMLDivElement>) {
+  const fraction = (e: MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
-    const fraction = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
-    const target = passageAt(bounds, Math.floor(fraction * words.length))
-    goTo(bounds[target < 0 ? bounds.length - 2 : target])
+    return Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
   }
+
+  // Jumps land on the start of a paragraph.
+  function seek(e: MouseEvent<HTMLDivElement>) {
+    const target = Math.min(Math.floor(fraction(e) * words.length), words.length - 1)
+    goTo(starts[paragraphAt(starts, target)])
+  }
+
+  // Arrow keys on the progress rule step back and forth a paragraph at a time.
+  function step(e: ReactKeyboardEvent) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    const pos = Math.min(book.pos, words.length - 1)
+    const p = paragraphAt(starts, pos)
+    if (e.key === 'ArrowRight') {
+      if (p + 1 < starts.length) goTo(starts[p + 1])
+    } else goTo(book.pos > starts[p] ? starts[p] : starts[Math.max(p - 1, 0)])
+  }
+
+  const typedWords = Math.min(book.pos, words.length)
+  const stats = statsLine(book.stats)
 
   return (
     <main className="reader">
-      <div className="config">
-        <span className="config-label">words</span>
-        {PASSAGE_SIZES.map((n) => (
-          <button
-            key={n}
-            className={n === size ? 'active' : ''}
-            onClick={(e) => {
-              unfocus(e)
-              setSize(n)
-              savePassageSize(n)
-              setFinished(null)
-              setAttempt((a) => a + 1)
-            }}
-          >
-            {n}
-          </button>
-        ))}
-        <span className="divider" />
-        <button
-          disabled={index <= 0 && book.pos < words.length}
-          onClick={(e) => {
-            unfocus(e)
-            goTo(bounds[(index < 0 ? bounds.length - 1 : index) - 1])
-          }}
-        >
-          ‹ prev
-        </button>
-        <button
-          disabled={index < 0}
-          onClick={(e) => {
-            unfocus(e)
-            goTo(end)
-          }}
-        >
-          next ›
-        </button>
-      </div>
+      <p className="running-head chrome">{book.title}</p>
 
       <div className="stage">
         {finished ? (
           <Results
             result={finished.result}
-            onNext={() => setFinished(null)}
+            words={finished.end - finished.start}
+            last={finished.end >= words.length}
+            onNext={() => goTo(finished.end)}
             onRedo={() => goTo(finished.start)}
-            last={index < 0}
           />
-        ) : index < 0 ? (
-          <div className="book-done">
-            <strong>book finished</strong>
-            <span>you typed all {words.length.toLocaleString()} words.</span>
-            <button className="text-button" onClick={() => goTo(0)}>
-              start again
-            </button>
-          </div>
+        ) : done ? (
+          <section className="finis">
+            <h1>Finis</h1>
+            <p className="lede">
+              You typed all {words.length.toLocaleString()} words of <cite>{book.title}</cite>.
+            </p>
+            {stats && <p className="fine">{stats}</p>}
+            <div className="actions">
+              <button className="button primary" onClick={onHome}>
+                Back to the library
+              </button>
+              <button className="button quiet" onClick={() => goTo(0)}>
+                Type it again
+              </button>
+            </div>
+          </section>
         ) : (
           <Typing
-            key={`${start}:${end}:${attempt}`}
-            words={passage}
-            starts={passageStarts}
-            onProgress={(done) => onPos(start + done)}
-            onFinish={(result) => {
-              setFinished({ result, start })
-              onPos(end)
+            key={`${from}:${attempt}`}
+            words={rest}
+            starts={restStarts}
+            onProgress={(typed) => onPos(from + typed)}
+            onFinish={(result, typed) => {
+              setFinished({ result, start: from, end: from + typed })
+              onPos(from + typed)
               onResult(result)
             }}
+            onLeave={onResult}
           />
         )}
       </div>
 
-      <footer>
-        <div className="book-line">
-          <span className="book-title">{book.title}</span>
-          {book.stats && book.stats.seconds > 0 && (
-            <span className="book-stats">
-              avg {Math.round(book.stats.chars / 5 / (book.stats.seconds / 60))} wpm ·{' '}
-              {Math.floor(((book.stats.keys - book.stats.errors) / Math.max(book.stats.keys, 1)) * 100)}% acc ·{' '}
-              {formatDuration(book.stats.seconds)} typed
+      <footer className="reader-foot">
+        <div
+          className="progress"
+          role="slider"
+          tabIndex={0}
+          aria-label="Position in the book"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(percent(book))}
+          aria-valuetext={`${percent(book).toFixed(1)}% of the book`}
+          onClick={seek}
+          onKeyDown={step}
+          onMouseMove={(e) => setHover(fraction(e))}
+          onMouseLeave={() => setHover(null)}
+        >
+          <div className="progress-fill" style={{ width: `${percent(book)}%` }} />
+          {hover !== null && (
+            <span className="progress-at" style={{ left: `${hover * 100}%` }}>
+              Jump to {Math.round(hover * 100)}%
             </span>
           )}
+        </div>
+        <div className="foot-line chrome">
           <span>
-            {Math.min(book.pos, words.length).toLocaleString()} / {words.length.toLocaleString()} words ·{' '}
-            {percent(book).toFixed(1)}%
+            {typedWords.toLocaleString()} of {words.length.toLocaleString()} words · {percent(book).toFixed(1)}%
           </span>
+          {stats && <span>{stats}</span>}
         </div>
-        <div className="progress" onClick={seek} title="Click to jump to a position in the book">
-          <div className="progress-fill" style={{ width: `${percent(book)}%` }} />
-        </div>
-        <div className="hints">
-          <kbd>tab</kbd> restart passage
-          {!finished && index >= 0 && (
+        <p className="hints chrome">
+          {finished ? (
             <>
-              <kbd>enter</kbd> next paragraph
+              <span>
+                <kbd>enter</kbd> {finished.end >= words.length ? 'finish' : 'continue'}
+              </span>
+              <span>
+                <kbd>R</kbd> retype
+              </span>
             </>
+          ) : (
+            !done && (
+              <>
+                <span>
+                  <kbd>enter</kbd> at each ¶
+                </span>
+                <span>
+                  <kbd>esc</kbd> end the session
+                </span>
+              </>
+            )
           )}
-          {finished && (
-            <>
-              <kbd>enter</kbd> next passage
-            </>
-          )}
-        </div>
+        </p>
       </footer>
     </main>
   )
 }
 
-function Results(props: { result: Result; last: boolean; onNext: () => void; onRedo: () => void }) {
-  const { result, last, onNext, onRedo } = props
+function Pace({ values }: { values: number[] }) {
+  const top = Math.max(...values) * 1.1 || 1
+  const points = values.map((v, i) => `${(i / (values.length - 1)) * 100},${(1 - v / top) * 100}`).join(' ')
+  const low = Math.round(Math.min(...values))
+  const high = Math.round(Math.max(...values))
   return (
-    <div className="results">
-      <div className="headline">
-        <div className="stat big">
-          <span className="label">wpm</span>
-          <span className="value">{Math.round(result.wpm)}</span>
+    <figure className="pace">
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`Pace over the session, between ${low} and ${high} words a minute`}
+      >
+        <polyline points={points} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <figcaption>
+        <span>Pace, start to finish</span>
+        <span>
+          {low} to {high} wpm
+        </span>
+      </figcaption>
+    </figure>
+  )
+}
+
+function Results(props: { result: Result; words: number; last: boolean; onNext: () => void; onRedo: () => void }) {
+  const { result, words, last, onNext, onRedo } = props
+  return (
+    <section className="results" aria-labelledby="results-title">
+      <h1 className="eyebrow" id="results-title">
+        Session
+      </h1>
+      <p className="verdict">
+        <b>{words.toLocaleString()}</b> {words === 1 ? 'word' : 'words'} in <b>{formatSpan(result.seconds)}</b>.
+        Every one of them passed through your hands.
+      </p>
+      {result.pace.length > 0 && <Pace values={result.pace} />}
+      <dl className="figures">
+        <div>
+          <dt>Speed</dt>
+          <dd>
+            {Math.round(result.wpm)} wpm · {Math.round(result.raw)} raw
+          </dd>
         </div>
-        <div className="stat big">
-          <span className="label">acc</span>
-          <span className="value">{Math.floor(result.acc)}%</span>
+        <div>
+          <dt>Accuracy</dt>
+          <dd>
+            {Math.floor(result.acc)}% · {result.mistakes.toLocaleString()}{' '}
+            {result.mistakes === 1 ? 'mistake' : 'mistakes'}
+          </dd>
         </div>
-      </div>
-      <div className="details">
-        <div className="stat">
-          <span className="label">raw</span>
-          <span className="value">{Math.round(result.raw)}</span>
+        <div>
+          <dt>Characters</dt>
+          <dd>
+            {result.correct.toLocaleString()} right, {result.incorrect} wrong, {result.extra} extra, {result.missed}{' '}
+            missed
+          </dd>
         </div>
-        <div className="stat">
-          <span className="label">mistakes</span>
-          <span className="value">{result.mistakes}</span>
-        </div>
-        <div className="stat" title="correct / incorrect / extra / missed">
-          <span className="label">characters</span>
-          <span className="value">
-            {result.correct}/{result.incorrect}/{result.extra}/{result.missed}
-          </span>
-        </div>
-        <div className="stat">
-          <span className="label">time</span>
-          <span className="value">{formatTime(result.seconds)}</span>
-        </div>
-      </div>
+      </dl>
       <div className="actions">
-        <button className="text-button" onClick={onRedo}>
-          retype
+        <button className="button primary" onClick={onNext}>
+          {last ? 'Finish' : 'Continue'} <kbd>enter</kbd>
         </button>
-        <button className="text-button primary" onClick={onNext}>
-          {last ? 'finish' : 'next passage'}
+        <button className="button quiet" onClick={onRedo}>
+          Retype <kbd>R</kbd>
         </button>
       </div>
-    </div>
+    </section>
   )
 }

@@ -1,5 +1,5 @@
 // Books, reading positions and typing totals live in Supabase. Only per-browser preferences
-// (passage size, which book was open) stay in localStorage.
+// (which book was open, which was typed last) stay in localStorage.
 import { supabase } from './supabase'
 
 export type BookMeta = {
@@ -11,7 +11,7 @@ export type BookMeta = {
   stats?: BookStats
 }
 
-// Running totals over every finished passage.
+// Running totals over every typing session.
 export type BookStats = {
   seconds: number
   chars: number // characters that count towards wpm
@@ -20,26 +20,22 @@ export type BookStats = {
 }
 
 const CURRENT_KEY = 'retype.current'
-const SIZE_KEY = 'retype.passageSize'
-
-export const PASSAGE_SIZES = [25, 50, 100, 200]
+const LAST_KEY = 'retype.last'
 
 export function loadCurrent(): string | null {
   return localStorage.getItem(CURRENT_KEY)
 }
 
 export function saveCurrent(id: string | null) {
-  if (id) localStorage.setItem(CURRENT_KEY, id)
-  else localStorage.removeItem(CURRENT_KEY)
+  if (id) {
+    localStorage.setItem(CURRENT_KEY, id)
+    localStorage.setItem(LAST_KEY, id)
+  } else localStorage.removeItem(CURRENT_KEY)
 }
 
-export function loadPassageSize(): number {
-  const size = Number(localStorage.getItem(SIZE_KEY))
-  return PASSAGE_SIZES.includes(size) ? size : 50
-}
-
-export function savePassageSize(size: number) {
-  localStorage.setItem(SIZE_KEY, String(size))
+// The book opened most recently, which the library offers to continue.
+export function loadLast(): string | null {
+  return localStorage.getItem(LAST_KEY)
 }
 
 type Row = {
