@@ -71,7 +71,7 @@ async function extractPdf(file: File, onProgress: Progress) {
     const paragraphs: string[] = []
     let pendingBreak = true
     for (let n = 1; n <= doc.numPages; n++) {
-      onProgress(`extracting page ${n} / ${doc.numPages}`)
+      onProgress(`Reading page ${n} of ${doc.numPages}`)
       const page = await doc.getPage(n)
       const content = await page.getTextContent()
       const lines: Line[] = []
@@ -173,7 +173,7 @@ async function extractEpub(file: File, onProgress: Progress) {
 
   const parts: string[] = []
   for (let i = 0; i < chapters.length; i++) {
-    onProgress(`extracting chapter ${i + 1} / ${chapters.length}`)
+    onProgress(`Reading chapter ${i + 1} of ${chapters.length}`)
     const markup = await read(chapters[i])
     if (!markup) continue
     let doc = parser.parseFromString(markup, 'application/xhtml+xml')

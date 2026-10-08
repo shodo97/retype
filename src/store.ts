@@ -1,5 +1,5 @@
 // Books, reading positions and typing totals live in Supabase. Only per-browser preferences
-// (which book was open) stay in localStorage.
+// (which book was open, which was typed last) stay in localStorage.
 import { supabase } from './supabase'
 
 export type BookMeta = {
@@ -20,14 +20,22 @@ export type BookStats = {
 }
 
 const CURRENT_KEY = 'retype.current'
+const LAST_KEY = 'retype.last'
 
 export function loadCurrent(): string | null {
   return localStorage.getItem(CURRENT_KEY)
 }
 
 export function saveCurrent(id: string | null) {
-  if (id) localStorage.setItem(CURRENT_KEY, id)
-  else localStorage.removeItem(CURRENT_KEY)
+  if (id) {
+    localStorage.setItem(CURRENT_KEY, id)
+    localStorage.setItem(LAST_KEY, id)
+  } else localStorage.removeItem(CURRENT_KEY)
+}
+
+// The book opened most recently, which the library offers to continue.
+export function loadLast(): string | null {
+  return localStorage.getItem(LAST_KEY)
 }
 
 type Row = {

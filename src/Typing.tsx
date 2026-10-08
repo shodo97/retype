@@ -12,6 +12,7 @@ export type Result = {
   incorrect: number
   extra: number
   missed: number
+  pace: number[] // wpm over the session in equal slices of time; empty for a short one
 }
 
 type State = {
@@ -20,6 +21,7 @@ type State = {
   start: number
   end: number
   last: number // time of the latest keystroke
+  stamps: number[] // when each word was left
   stopped: boolean // ended by the user rather than by running out of words
   keys: number // every keystroke, including ones later corrected
   errors: number
@@ -32,13 +34,30 @@ type Action =
   | { type: 'stop' }
 
 const MAX_EXTRA = 10
-const INITIAL: State = { typed: [], idx: 0, start: 0, end: 0, last: 0, stopped: false, keys: 0, errors: 0 }
+const INITIAL: State = {
+  typed: [],
+  idx: 0,
+  start: 0,
+  end: 0,
+  last: 0,
+  stamps: [],
+  stopped: false,
+  keys: 0,
+  errors: 0,
+}
+
+// The pace chart gets one point for every SLICE of the session, up to MAX_SLICES.
+const SLICE = 10000
+const MIN_SLICES = 3
+const MAX_SLICES = 30
 
 // Only the words around the caret are rendered. The window moves once every CHUNK words.
 const CHUNK = 100
 const BEHIND = 100
 const AHEAD = 300
 const MAX_SNAP = 400
+
+const CONTROLS = 'button, a, [role="slider"]'
 
 // The session ends at the last keystroke, so time spent reaching for the button is not counted.
 const stop = (s: State): State => ({ ...s, end: s.last, stopped: true })
@@ -56,11 +75,13 @@ function reduce(words: string[], paragraphEnds: Set<number>, s: State, a: Action
       if (cur.length >= target.length + MAX_EXTRA) return s
       const next = cur + a.char
       typed[s.idx] = next
+      const finished = last && next === target
       return {
         ...s,
         typed,
         start: s.start || a.at,
-        end: last && next === target ? a.at : 0,
+        end: finished ? a.at : 0,
+        stamps: finished ? stamp(s, a.at) : s.stamps,
         last: a.at,
         keys: s.keys + 1,
         errors: s.errors + (a.char === target[cur.length] ? 0 : 1),
@@ -75,6 +96,7 @@ function reduce(words: string[], paragraphEnds: Set<number>, s: State, a: Action
         idx: last ? s.idx : s.idx + 1,
         end: last ? a.at : 0,
         last: a.at,
+        stamps: stamp(s, a.at),
         keys: s.keys + 1,
         errors: s.errors + (skipped ? 1 : 0),
       }
@@ -90,6 +112,24 @@ function reduce(words: string[], paragraphEnds: Set<number>, s: State, a: Action
       return { ...s, typed, idx: s.idx - 1 }
     }
   }
+}
+
+function stamp(s: State, at: number): number[] {
+  const stamps = s.stamps.slice()
+  stamps[s.idx] = at
+  return stamps
+}
+
+function pace(s: State): number[] {
+  const ms = s.end - s.start
+  const slices = Math.min(MAX_SLICES, Math.floor(ms / SLICE))
+  if (slices < MIN_SLICES) return []
+  const chars = new Array<number>(slices).fill(0)
+  s.stamps.forEach((at, i) => {
+    const slice = Math.min(slices - 1, Math.floor(((at - s.start) / ms) * slices))
+    chars[slice] += (s.typed[i] ?? '').length + 1
+  })
+  return chars.map((n) => n / 5 / (ms / slices / 60000))
 }
 
 function measure(words: string[], s: State, now: number): Result {
@@ -126,7 +166,13 @@ function measure(words: string[], s: State, now: number): Result {
     incorrect,
     extra,
     missed,
+    pace: s.end ? pace(s) : [],
   }
+}
+
+const formatClock = (seconds: number) => {
+  const s = Math.max(0, Math.floor(seconds))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
 const Word = memo(function Word({ word, typed, status }: { word: string; typed: string; status: string }) {
@@ -151,10 +197,12 @@ type Props = {
   onProgress: (wordsDone: number) => void
   onFinish: (result: Result, wordsDone: number) => void
   // The session was abandoned part-way: the book was closed or the position moved.
-  onLeave: (result: Result) => void
+  onLeave?: (result: Result) => void
+  // The sample on the front door: no end button, and the rest of the page stays in view.
+  demo?: boolean
 }
 
-export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) {
+export function Typing({ words, starts, onProgress, onFinish, onLeave, demo = false }: Props) {
   const paragraphEnds = useMemo(() => new Set(starts.slice(1).map((i) => i - 1)), [starts])
   const [s, dispatch] = useReducer(
     (state: State, action: Action) => reduce(words, paragraphEnds, state, action),
@@ -184,15 +232,21 @@ export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) 
   latest.current = { s, onLeave }
 
   useEffect(() => {
+    const root = document.documentElement
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.isComposing) return
+      if (e.metaKey || e.isComposing || e.key === 'Tab') return
       if (e.target instanceof HTMLInputElement) return
+      // A focused control keeps the keys that operate it. Any other key goes back to the text.
+      const control = e.target instanceof HTMLElement ? e.target.closest<HTMLElement>(CONTROLS) : null
+      if (control) {
+        if (e.key === ' ' || e.key === 'Enter' || e.key.startsWith('Arrow')) return
+        control.blur()
+      }
+      // Typing hides everything but the text; see onMouseMove for how it comes back.
+      if (!demo && e.key.length === 1 && !e.ctrlKey) root.dataset.focus = 'on'
       if (e.key === 'Escape') {
         e.preventDefault()
         dispatch({ type: 'stop' })
-      } else if (e.key === 'Tab') {
-        // Keep focus on the page so typing carries on.
-        e.preventDefault()
       } else if (e.key === 'Backspace') {
         e.preventDefault()
         dispatch({ type: 'back', word: e.altKey || e.ctrlKey })
@@ -206,8 +260,24 @@ export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) 
         dispatch({ type: 'char', char: e.key, at: Date.now() })
       }
     }
+    const onMouseMove = (e: MouseEvent) => {
+      if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) delete root.dataset.focus
+    }
+    // A control clicked with the mouse gives focus back, so Space and Enter keep going to the text.
+    const onClick = (e: MouseEvent) => {
+      const focused = document.activeElement
+      if (e.detail && focused instanceof HTMLElement && focused.matches(CONTROLS)) focused.blur()
+    }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('click', onClick)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('click', onClick)
+      delete root.dataset.focus
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Keep the live stats moving between keystrokes.
@@ -231,7 +301,7 @@ export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) 
   useEffect(
     () => () => {
       const { s, onLeave } = latest.current
-      if (s.start && !s.end) onLeave(measure(words, stop(s), 0))
+      if (s.start && !s.end) onLeave?.(measure(words, stop(s), 0))
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -292,19 +362,14 @@ export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) 
             />
           )
         })}
-        {to === next && to < words.length && <span className={`enter${s.idx >= to ? ' passed' : ''}`}>↵</span>}
+        {to === next && to < words.length && <span className={`enter${s.idx >= to ? ' passed' : ''}`}>¶</span>}
       </div>,
     )
   }
 
   return (
-    <div className="typing">
-      <div className={`live${s.start ? '' : ' idle'}`}>
-        <span>{s.idx.toLocaleString()} words</span>
-        <span>{Math.round(live.wpm)} wpm</span>
-        <span>{Math.round(live.acc)}%</span>
-      </div>
-      <div className="viewport" ref={viewportRef}>
+    <div className={`typing${demo ? ' demo' : ''}`}>
+      <div className="viewport" ref={viewportRef} aria-label="Text to type">
         <div className="scroller" ref={scrollerRef}>
           <div className={`caret${running ? '' : ' blink'}`} ref={caretRef} />
           <div className="words" ref={wordsRef}>
@@ -312,10 +377,21 @@ export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) 
           </div>
         </div>
       </div>
-      <div className="typing-actions">
-        <button className="text-button primary" disabled={!s.start} onClick={() => dispatch({ type: 'stop' })}>
-          end session
-        </button>
+      <div className="typing-foot">
+        {s.start ? (
+          // Words and time with the book; speed and accuracy wait for the end of the session.
+          <p className="live">
+            <span>{s.idx.toLocaleString()} words</span>
+            <span>{formatClock(live.seconds)}</span>
+          </p>
+        ) : (
+          <p className="live">Start typing when you are ready.</p>
+        )}
+        {!demo && (
+          <button className="button quiet chrome" disabled={!s.start} onClick={() => dispatch({ type: 'stop' })}>
+            End session <kbd>esc</kbd>
+          </button>
+        )}
       </div>
     </div>
   )
