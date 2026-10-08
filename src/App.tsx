@@ -2,28 +2,22 @@ import type { Session } from '@supabase/supabase-js'
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type MouseEvent } from 'react'
 import { extract } from './extract'
 import {
-  PASSAGE_SIZES,
   createBook,
   deleteBook,
   flushUpdates,
   getText,
   listBooks,
   loadCurrent,
-  loadPassageSize,
   migrateLocalBooks,
   onSyncStatus,
   queueUpdate,
   saveCurrent,
-  savePassageSize,
   type BookMeta,
   type BookStats,
 } from './store'
 import { supabase } from './supabase'
-import { normalize, parseBook, passageAt, passageBounds, type Book } from './text'
+import { normalize, paragraphAt, parseBook, type Book } from './text'
 import { Typing, type Result } from './Typing'
-
-// Buttons give focus straight back so Space and Enter keep going to the typing test.
-const unfocus = (e: MouseEvent<HTMLElement>) => e.currentTarget.blur()
 
 const percent = (book: BookMeta) => (book.wordCount ? (Math.min(book.pos, book.wordCount) / book.wordCount) * 100 : 0)
 
@@ -83,7 +77,7 @@ function SignIn() {
     <div className="app">
       <header>
         <span className="logo">
-          <span className="logo-mark">rt</span>retype
+          <span className="logo-mark">sh</span>shodo
         </span>
       </header>
       <main className="library">
@@ -223,7 +217,7 @@ function Main() {
     <div className="app">
       <header>
         <button className="logo" onClick={goHome}>
-          <span className="logo-mark">rt</span>retype
+          <span className="logo-mark">sh</span>shodo
         </button>
         <nav>
           {syncError && (
@@ -343,24 +337,20 @@ type ReaderProps = {
 
 function Reader({ book, content, onPos, onResult }: ReaderProps) {
   const { words, starts } = content
-  const [size, setSize] = useState(loadPassageSize)
+  // Where the current session began. Typing runs on from here until it is ended.
+  const [from, setFrom] = useState(book.pos)
   const [attempt, setAttempt] = useState(0)
-  // Result of the passage just finished, with where it started so it can be retyped.
-  const [finished, setFinished] = useState<{ result: Result; start: number } | null>(null)
+  // Result of the session just ended, with its range so it can be retyped or continued.
+  const [finished, setFinished] = useState<{ result: Result; start: number; end: number } | null>(null)
 
-  const bounds = useMemo(() => passageBounds(content, size), [content, size])
-  const index = passageAt(bounds, book.pos)
-  const start = index < 0 ? words.length : bounds[index]
-  const end = index < 0 ? words.length : bounds[index + 1]
-  const passage = useMemo(() => words.slice(start, end), [words, start, end])
-  // Paragraph starts inside the passage, relative to it.
-  const passageStarts = useMemo(
-    () => [0, ...starts.filter((i) => i > start && i < end).map((i) => i - start)],
-    [starts, start, end],
-  )
+  const done = from >= words.length
+  const rest = useMemo(() => words.slice(from), [words, from])
+  // Paragraph starts from here on, relative to the session.
+  const restStarts = useMemo(() => [0, ...starts.filter((i) => i > from).map((i) => i - from)], [starts, from])
 
   function goTo(pos: number) {
     setFinished(null)
+    setFrom(pos)
     setAttempt((n) => n + 1)
     onPos(pos)
   }
@@ -370,7 +360,7 @@ function Reader({ book, content, onPos, onResult }: ReaderProps) {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter') {
         e.preventDefault()
-        setFinished(null)
+        goTo(finished.end)
       } else if (e.key === 'Tab') {
         e.preventDefault()
         goTo(finished.start)
@@ -381,62 +371,25 @@ function Reader({ book, content, onPos, onResult }: ReaderProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished])
 
+  // Jumps land on the start of a paragraph.
   function seek(e: MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect()
     const fraction = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
-    const target = passageAt(bounds, Math.floor(fraction * words.length))
-    goTo(bounds[target < 0 ? bounds.length - 2 : target])
+    const target = Math.min(Math.floor(fraction * words.length), words.length - 1)
+    goTo(starts[paragraphAt(starts, target)])
   }
 
   return (
     <main className="reader">
-      <div className="config">
-        <span className="config-label">words</span>
-        {PASSAGE_SIZES.map((n) => (
-          <button
-            key={n}
-            className={n === size ? 'active' : ''}
-            onClick={(e) => {
-              unfocus(e)
-              setSize(n)
-              savePassageSize(n)
-              setFinished(null)
-              setAttempt((a) => a + 1)
-            }}
-          >
-            {n}
-          </button>
-        ))}
-        <span className="divider" />
-        <button
-          disabled={index <= 0 && book.pos < words.length}
-          onClick={(e) => {
-            unfocus(e)
-            goTo(bounds[(index < 0 ? bounds.length - 1 : index) - 1])
-          }}
-        >
-          ‹ prev
-        </button>
-        <button
-          disabled={index < 0}
-          onClick={(e) => {
-            unfocus(e)
-            goTo(end)
-          }}
-        >
-          next ›
-        </button>
-      </div>
-
       <div className="stage">
         {finished ? (
           <Results
             result={finished.result}
-            onNext={() => setFinished(null)}
+            onNext={() => goTo(finished.end)}
             onRedo={() => goTo(finished.start)}
-            last={index < 0}
+            last={finished.end >= words.length}
           />
-        ) : index < 0 ? (
+        ) : done ? (
           <div className="book-done">
             <strong>book finished</strong>
             <span>you typed all {words.length.toLocaleString()} words.</span>
@@ -446,15 +399,16 @@ function Reader({ book, content, onPos, onResult }: ReaderProps) {
           </div>
         ) : (
           <Typing
-            key={`${start}:${end}:${attempt}`}
-            words={passage}
-            starts={passageStarts}
-            onProgress={(done) => onPos(start + done)}
-            onFinish={(result) => {
-              setFinished({ result, start })
-              onPos(end)
+            key={`${from}:${attempt}`}
+            words={rest}
+            starts={restStarts}
+            onProgress={(typed) => onPos(from + typed)}
+            onFinish={(result, typed) => {
+              setFinished({ result, start: from, end: from + typed })
+              onPos(from + typed)
               onResult(result)
             }}
+            onLeave={onResult}
           />
         )}
       </div>
@@ -478,16 +432,18 @@ function Reader({ book, content, onPos, onResult }: ReaderProps) {
           <div className="progress-fill" style={{ width: `${percent(book)}%` }} />
         </div>
         <div className="hints">
-          <kbd>tab</kbd> restart passage
-          {!finished && index >= 0 && (
+          {finished ? (
             <>
-              <kbd>enter</kbd> next paragraph
+              <kbd>tab</kbd> retype
+              <kbd>enter</kbd> {finished.end >= words.length ? 'finish' : 'continue'}
             </>
-          )}
-          {finished && (
-            <>
-              <kbd>enter</kbd> next passage
-            </>
+          ) : (
+            !done && (
+              <>
+                <kbd>esc</kbd> end session
+                <kbd>enter</kbd> next paragraph
+              </>
+            )
           )}
         </div>
       </footer>
@@ -534,7 +490,7 @@ function Results(props: { result: Result; last: boolean; onNext: () => void; onR
           retype
         </button>
         <button className="text-button primary" onClick={onNext}>
-          {last ? 'finish' : 'next passage'}
+          {last ? 'finish' : 'continue'}
         </button>
       </div>
     </div>

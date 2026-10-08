@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { paragraphAt } from './text'
 
 export type Result = {
   wpm: number
@@ -18,6 +19,8 @@ type State = {
   idx: number // word under the caret
   start: number
   end: number
+  last: number // time of the latest keystroke
+  stopped: boolean // ended by the user rather than by running out of words
   keys: number // every keystroke, including ones later corrected
   errors: number
 }
@@ -26,14 +29,23 @@ type Action =
   | { type: 'char'; char: string; at: number }
   | { type: 'space'; at: number; enter: boolean }
   | { type: 'back'; word: boolean }
-  | { type: 'reset' }
+  | { type: 'stop' }
 
 const MAX_EXTRA = 10
-const INITIAL: State = { typed: [], idx: 0, start: 0, end: 0, keys: 0, errors: 0 }
+const INITIAL: State = { typed: [], idx: 0, start: 0, end: 0, last: 0, stopped: false, keys: 0, errors: 0 }
+
+// Only the words around the caret are rendered. The window moves once every CHUNK words.
+const CHUNK = 100
+const BEHIND = 100
+const AHEAD = 300
+const MAX_SNAP = 400
+
+// The session ends at the last keystroke, so time spent reaching for the button is not counted.
+const stop = (s: State): State => ({ ...s, end: s.last, stopped: true })
 
 function reduce(words: string[], paragraphEnds: Set<number>, s: State, a: Action): State {
-  if (a.type === 'reset') return INITIAL
   if (s.end) return s
+  if (a.type === 'stop') return s.start ? stop(s) : s
   const target = words[s.idx]
   const cur = s.typed[s.idx] ?? ''
   const last = s.idx === words.length - 1
@@ -49,6 +61,7 @@ function reduce(words: string[], paragraphEnds: Set<number>, s: State, a: Action
         typed,
         start: s.start || a.at,
         end: last && next === target ? a.at : 0,
+        last: a.at,
         keys: s.keys + 1,
         errors: s.errors + (a.char === target[cur.length] ? 0 : 1),
       }
@@ -61,6 +74,7 @@ function reduce(words: string[], paragraphEnds: Set<number>, s: State, a: Action
         ...s,
         idx: last ? s.idx : s.idx + 1,
         end: last ? a.at : 0,
+        last: a.at,
         keys: s.keys + 1,
         errors: s.errors + (skipped ? 1 : 0),
       }
@@ -90,13 +104,14 @@ function measure(words: string[], s: State, now: number): Result {
     const typed = s.typed[i] ?? ''
     const spaced = i < s.idx
     rawChars += typed.length + (spaced ? 1 : 0)
-    if (typed === word) correctChars += word.length + (spaced ? 1 : 0)
+    // The word under the caret counts for as much of it as has been typed correctly.
+    if (spaced ? typed === word : word.startsWith(typed)) correctChars += typed.length + (spaced ? 1 : 0)
     for (let j = 0; j < Math.min(word.length, typed.length); j++) {
       if (typed[j] === word[j]) correct++
       else incorrect++
     }
     extra += Math.max(0, typed.length - word.length)
-    if (spaced || s.end) missed += Math.max(0, word.length - typed.length)
+    if (spaced || (s.end && !s.stopped)) missed += Math.max(0, word.length - typed.length)
   }
   const ms = s.start ? (s.end || now) - s.start : 0
   const minutes = ms / 60000
@@ -131,13 +146,15 @@ const Word = memo(function Word({ word, typed, status }: { word: string; typed: 
 })
 
 type Props = {
-  words: string[]
+  words: string[] // everything from where the session starts to the end of the book
   starts: number[] // index of the first word of each paragraph, beginning with 0
   onProgress: (wordsDone: number) => void
-  onFinish: (result: Result) => void
+  onFinish: (result: Result, wordsDone: number) => void
+  // The session was abandoned part-way: the book was closed or the position moved.
+  onLeave: (result: Result) => void
 }
 
-export function Typing({ words, starts, onProgress, onFinish }: Props) {
+export function Typing({ words, starts, onProgress, onFinish, onLeave }: Props) {
   const paragraphEnds = useMemo(() => new Set(starts.slice(1).map((i) => i - 1)), [starts])
   const [s, dispatch] = useReducer(
     (state: State, action: Action) => reduce(words, paragraphEnds, state, action),
@@ -153,13 +170,29 @@ export function Typing({ words, starts, onProgress, onFinish }: Props) {
   const running = s.start > 0 && !s.end
   const curLength = (s.typed[s.idx] ?? '').length
 
+  // Rendered range of words. It starts on a paragraph break when one is close enough, so the
+  // lines around the caret do not rewrap when the window moves.
+  const anchor = Math.floor(s.idx / CHUNK) * CHUNK
+  const [lo, hi] = useMemo(() => {
+    const from = Math.max(0, anchor - BEHIND)
+    const paragraph = starts[paragraphAt(starts, from)]
+    return [from - paragraph <= MAX_SNAP ? paragraph : from, Math.min(words.length, anchor + CHUNK + AHEAD)]
+  }, [anchor, starts, words.length])
+  const shownRef = useRef(lo)
+
+  const latest = useRef({ s, onLeave })
+  latest.current = { s, onLeave }
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.isComposing) return
       if (e.target instanceof HTMLInputElement) return
-      if (e.key === 'Tab') {
+      if (e.key === 'Escape') {
         e.preventDefault()
-        dispatch({ type: 'reset' })
+        dispatch({ type: 'stop' })
+      } else if (e.key === 'Tab') {
+        // Keep focus on the page so typing carries on.
+        e.preventDefault()
       } else if (e.key === 'Backspace') {
         e.preventDefault()
         dispatch({ type: 'back', word: e.altKey || e.ctrlKey })
@@ -190,9 +223,19 @@ export function Typing({ words, starts, onProgress, onFinish }: Props) {
   }, [s.idx])
 
   useEffect(() => {
-    if (s.end) onFinish(measure(words, s, s.end))
+    if (s.end) onFinish(measure(words, s, s.end), s.stopped ? s.idx : words.length)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.end])
+
+  // Typing that was never ended still counts towards the book's totals.
+  useEffect(
+    () => () => {
+      const { s, onLeave } = latest.current
+      if (s.start && !s.end) onLeave(measure(words, stop(s), 0))
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
 
   // Line wrapping changes with the viewport width and once the web font arrives.
   useEffect(() => {
@@ -203,31 +246,61 @@ export function Typing({ words, starts, onProgress, onFinish }: Props) {
     return () => observer.disconnect()
   }, [])
 
-  // Place the caret after the last typed letter and, when the passage is taller than the
-  // viewport, keep two lines visible above the active one.
+  // Place the caret after the last typed letter and keep two lines visible above the active one.
   useLayoutEffect(() => {
+    const caret = caretRef.current!
+    const scroller = scrollerRef.current!
+    // When the rendered window moves every offset shifts at once, which must not be animated.
+    const jumped = shownRef.current !== lo
+    shownRef.current = lo
+    if (jumped) caret.style.transition = scroller.style.transition = 'none'
     const word = wordsRef.current!.querySelector<HTMLElement>('.word.active')!
     const letter = word.children[Math.max(curLength - 1, 0)] as HTMLElement
     const margin = parseFloat(getComputedStyle(word).marginTop)
     const lineHeight = word.offsetHeight + margin * 2
     const x = letter.offsetLeft + (curLength ? letter.offsetWidth : 0)
-    caretRef.current!.style.transform = `translate(${x}px, ${word.offsetTop}px)`
-    caretRef.current!.style.height = `${word.offsetHeight}px`
-    const overflow = scrollerRef.current!.offsetHeight - viewportRef.current!.clientHeight
+    caret.style.transform = `translate(${x}px, ${word.offsetTop}px)`
+    caret.style.height = `${word.offsetHeight}px`
+    const overflow = scroller.offsetHeight - viewportRef.current!.clientHeight
     const scroll = Math.max(0, Math.min(word.offsetTop - margin - lineHeight * 2, overflow))
-    scrollerRef.current!.style.transform = `translateY(${-scroll}px)`
+    scroller.style.transform = `translateY(${-scroll}px)`
     viewportRef.current!.classList.toggle('more-above', scroll > 0)
-    viewportRef.current!.classList.toggle('more-below', scroll < overflow)
-  }, [s.idx, curLength, layoutTick])
+    viewportRef.current!.classList.toggle('more-below', scroll < overflow || hi < words.length)
+    if (jumped) {
+      void scroller.offsetHeight
+      caret.style.transition = scroller.style.transition = ''
+    }
+  }, [s.idx, curLength, layoutTick, lo, hi, words.length])
 
   const live = measure(words, s, Date.now())
+
+  const paragraphs = []
+  for (let p = paragraphAt(starts, lo); p < starts.length && starts[p] < hi; p++) {
+    const next = starts[p + 1] ?? words.length
+    const from = Math.max(starts[p], lo)
+    const to = Math.min(next, hi)
+    paragraphs.push(
+      <div className="paragraph" key={starts[p]}>
+        {words.slice(from, to).map((word, j) => {
+          const i = from + j
+          return (
+            <Word
+              key={i}
+              word={word}
+              typed={s.typed[i] ?? ''}
+              status={i < s.idx ? 'done' : i === s.idx ? 'active' : 'todo'}
+            />
+          )
+        })}
+        {to === next && to < words.length && <span className={`enter${s.idx >= to ? ' passed' : ''}`}>↵</span>}
+      </div>,
+    )
+  }
 
   return (
     <div className="typing">
       <div className={`live${s.start ? '' : ' idle'}`}>
-        <span>
-          {s.idx}/{words.length}
-        </span>
+        <span>{s.idx.toLocaleString()} words</span>
         <span>{Math.round(live.wpm)} wpm</span>
         <span>{Math.round(live.acc)}%</span>
       </div>
@@ -235,27 +308,14 @@ export function Typing({ words, starts, onProgress, onFinish }: Props) {
         <div className="scroller" ref={scrollerRef}>
           <div className={`caret${running ? '' : ' blink'}`} ref={caretRef} />
           <div className="words" ref={wordsRef}>
-            {starts.map((from, p) => {
-              const to = starts[p + 1] ?? words.length
-              return (
-                <div className="paragraph" key={from}>
-                  {words.slice(from, to).map((word, j) => {
-                    const i = from + j
-                    return (
-                      <Word
-                        key={i}
-                        word={word}
-                        typed={s.typed[i] ?? ''}
-                        status={i < s.idx ? 'done' : i === s.idx ? 'active' : 'todo'}
-                      />
-                    )
-                  })}
-                  {to < words.length && <span className={`enter${s.idx >= to ? ' passed' : ''}`}>↵</span>}
-                </div>
-              )
-            })}
+            {paragraphs}
           </div>
         </div>
+      </div>
+      <div className="typing-actions">
+        <button className="text-button primary" disabled={!s.start} onClick={() => dispatch({ type: 'stop' })}>
+          end session
+        </button>
       </div>
     </div>
   )

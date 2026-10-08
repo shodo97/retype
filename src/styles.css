@@ -1,8 +1,8 @@
-/* Monkeytype's default "serika dark" palette. */
+/* Monkeytype's "serika dark" palette with a green accent. */
 :root {
   --bg: #323437;
-  --main: #e2b714;
-  --caret: #e2b714;
+  --main: #06d6a0;
+  --caret: #06d6a0;
   --sub: #646669;
   --sub-alt: #2c2e31;
   --text: #d1d0c5;
@@ -238,45 +238,6 @@ header nav {
   flex-direction: column;
 }
 
-.config {
-  align-self: center;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  margin-top: 1.5rem;
-  padding: 0.25rem 0.75rem;
-  border-radius: 0.5rem;
-  background: var(--sub-alt);
-  font-size: 0.8rem;
-  color: var(--sub);
-}
-
-.config button {
-  padding: 0.5rem;
-  color: var(--sub);
-  transition: color 0.125s;
-}
-
-.config button:hover:not(:disabled) {
-  color: var(--text);
-}
-
-.config button.active {
-  color: var(--main);
-}
-
-.config-label {
-  padding: 0.5rem;
-}
-
-.divider {
-  width: 0.25rem;
-  height: 1.25rem;
-  margin: 0 0.5rem;
-  border-radius: 0.125rem;
-  background: var(--bg);
-}
-
 .stage {
   flex: 1;
   display: flex;
@@ -301,7 +262,7 @@ header nav {
   opacity: 0;
 }
 
-/* Shows the whole passage when it fits, otherwise scrolls with the caret. Each line is 2em
+/* Scrolls with the caret once the text is taller than this. Each line is 2em
    (1.5em of word plus 0.25em margin either side). */
 .viewport {
   max-height: max(8em, min(20em, calc(100vh - 23rem)));
@@ -393,6 +354,13 @@ header nav {
   50% {
     opacity: 0;
   }
+}
+
+.typing-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.5rem;
+  font-size: 1rem;
 }
 
 .book-done {
